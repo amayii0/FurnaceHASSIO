@@ -3,6 +3,8 @@
  **                  D2 = Data bus (this actually supports multiple sensors using OneWire)
  ** 2019-01-28, RDU: Adding control for 2 relays (Furnace on/off, Circulator on/off) using a 5V relay board
  ** 2019-01-29, RDU: Fool proofing DS18B20 against unread values (-127.00)
+ ** 2019-07-30, RDU: Migrated PlatformIO from Atom to VSCode, updated project structure
+ ** 2019-08-07, RDU: Updated lib_deps to rely solely on project's deps and not on any global libs, includes use of ArduinoJson 5.x
  **
  ** TODOs
  ** - Support multiple sensors as a HomieRange
@@ -18,7 +20,7 @@
     #include <OneWire.h>
     #include <DallasTemperature.h>
     #define TEMP_INVALID 0.12345 // Invalid temperature
-    #define TEMP_NOT_READ -127.00 // Invalid temperature
+    #define TEMP_NOT_READ -127.00 // Unable to read temperature
 
     OneWire oneWire(ONE_WIRE_BUS); // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
     DallasTemperature dtsensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
@@ -123,13 +125,16 @@ void loopHandlerDS18B20()
 
     // Water out temp
     rawTemp = getTemFromDS18B20(DS18B20_INDEX_WATEROUT);
-    if (isValidTemperature(rawTemp))
+    if (isValidTemperature(rawTemp)) {
       temperatureWaterOutNode.setProperty("degrees").send(String(rawTemp));
+    }
 
     // Water in temp
     rawTemp = getTemFromDS18B20(DS18B20_INDEX_WATERIN);
     if (isValidTemperature(rawTemp))
+    {
       temperatureWaterInNode.setProperty("degrees").send(String(rawTemp));
+    }
 
     lastMeasureSent = millis();
   }
@@ -177,9 +182,6 @@ void setup() {
 
   Homie_setFirmware(FW_NAME, FW_VERSION);
   Homie.setSetupFunction(setupHandler).setLoopFunction(loopHandler);
-
-// vvvvvvvvvvvvvvvv TODO : MOVE TO setupHandler ???
-// ^^^^^^^^^^^^^^^^^ TODO : MOVE TO setupHandler ???
 
   Homie.setup();
 }

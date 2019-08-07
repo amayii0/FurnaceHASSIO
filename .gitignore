@@ -1,10 +1,12 @@
 # =========================
-# PlatformIO files and folders
+# PlatformIO / VSCode files and folders
 # =========================
 .pioenvs
 .piolibdeps
 .clang_complete
 .gcc-flags.json
+.pio/
+.vscode/
 
 # Project specific
 # =========================
