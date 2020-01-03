@@ -26,10 +26,10 @@
     DallasTemperature dtsensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
 
     // Sensor consts/vars
-      HomieNode temperatureWaterInNode("temperature-WaterIn", "temperature");
-      HomieNode temperatureWaterOutNode("temperature-WaterOut", "temperature");
-      HomieNode switchPowerNode("switch-power", "switch");
-      HomieNode switchCirculatorNode("switch-circulator", "switch");
+      HomieNode temperatureWaterInNode("temperature-WaterIn", "Temperature", "temperature");
+      HomieNode temperatureWaterOutNode("temperature-WaterOut", "Temperature", "temperature");
+      HomieNode switchPowerNode("switch-power", "Switch", "switch");
+      HomieNode switchCirculatorNode("switch-circulator", "Switch", "switch");
 
     // Measure loop
       unsigned long lastMeasureSent = 0;
@@ -79,22 +79,26 @@ bool isValueLow(const String& value)
 
 bool isValidSwitchValue(const String& value)
 {
-  return !isValueHigh(value) && !isValueLow(value);
+  return isValueHigh(value) || isValueLow(value);
 }
 
 int valueToState(const String& value)
 {
-  return value=="ON" ? RELAY_STATE_ON : RELAY_STATE_OFF;
+  return isValueHigh(value) ? RELAY_STATE_ON : RELAY_STATE_OFF;
 }
 
 String valueToPayload(const String& value)
 {
-  return value=="HIGH" ? "ON" : "OFF";
+  return isValueHigh(value) ? "ON" : "OFF";
 }
 
 // Switch handlers for Power Switch
 bool switchPowerOnHandler(const HomieRange& range, const String& value) {
-  if (isValidSwitchValue(value)) return false;
+  if (|isValidSwitchValue(value))
+  {
+    Homie.getLogger() << "Power switch received an invalid value : " << value << endl;
+    return false;
+  }
 
   digitalWrite(RELAY_PIN_POWER, valueToState(value));
   switchPowerNode.setProperty("on").send(valueToPayload(value));
@@ -105,7 +109,11 @@ bool switchPowerOnHandler(const HomieRange& range, const String& value) {
 
 // Switch handlers for Circulator Switch
 bool switchCirculatorOnHandler(const HomieRange& range, const String& value) {
-  if (isValidSwitchValue(value)) return false;
+  if (|isValidSwitchValue(value))
+  {
+    Homie.getLogger() << "Circulator switch received an invalid value : " << value << endl;
+    return false;
+  }
 
   digitalWrite(RELAY_PIN_CIRCULATOR, valueToState(value));
   switchCirculatorNode.setProperty("on").send(valueToPayload(value));
@@ -169,9 +177,13 @@ void setupHandler() {
       temperatureWaterOutNode.advertise("unit");
       temperatureWaterOutNode.advertise("degrees");
 
+      //temperatureRangeNode; // TODOs : Convert named/indexed sensors to array for dynamic mapping at MQTT/Home Assistant
+
     // Relays
       switchPowerNode.advertise("on").settable(switchPowerOnHandler);
       switchCirculatorNode.advertise("on").settable(switchCirculatorOnHandler);
+
+      //switchRangeNode; // TODOs : Convert named/indexed switches to array for dynamic mapping at MQTT/Home Assistant
 }
 
 

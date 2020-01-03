@@ -1,6 +1,6 @@
 // Software specifications
   #define FW_NAME    "D1Mini-Furnace"
-  #define FW_VERSION "0.19.8.7a"
+  #define FW_VERSION "0.20.1.3a"
 
 // DS18B20 setup
   #define ONE_WIRE_BUS           D2 // Data wire is plugged into port 2 on the Arduino
