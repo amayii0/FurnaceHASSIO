@@ -94,7 +94,7 @@ String valueToPayload(const String& value)
 
 // Switch handlers for Power Switch
 bool switchPowerOnHandler(const HomieRange& range, const String& value) {
-  if (|isValidSwitchValue(value))
+  if (!isValidSwitchValue(value))
   {
     Homie.getLogger() << "Power switch received an invalid value : " << value << endl;
     return false;
@@ -109,7 +109,7 @@ bool switchPowerOnHandler(const HomieRange& range, const String& value) {
 
 // Switch handlers for Circulator Switch
 bool switchCirculatorOnHandler(const HomieRange& range, const String& value) {
-  if (|isValidSwitchValue(value))
+  if (!isValidSwitchValue(value))
   {
     Homie.getLogger() << "Circulator switch received an invalid value : " << value << endl;
     return false;
