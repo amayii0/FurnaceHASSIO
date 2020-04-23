@@ -1,21 +1,27 @@
 // Software specifications
-  #define FW_NAME    "D1Mini-Furnace"
-  #define FW_VERSION "0.20.4.19a"
+  #define FW_NAME                 "D1Mini-Furnace"
+  #define FW_VERSION              "0.20.4.23a"
 
 // DS18B20 setup
-  #define ONE_WIRE_BUS           D7 // D2 // Data wire is plugged into port 2 on the Arduino
-  #define DS18B20_INDEX_WATERIN  0
-  #define DS18B20_INDEX_WATEROUT 1
+  #define ONE_WIRE_BUS            D7 // Pin used for OneWire protocol
+  #define DS18B20_INDEX_WATERIN   0
+  #define DS18B20_INDEX_WATEROUT  1
 
 // Relay board setup
-  #define RELAY_PIN_POWER       D5 // D0
-  #define RELAY_PIN_CIRCULATOR  D6 // D1
-  #define RELAY_STATE_ON        0
-  #define RELAY_STATE_OFF       1
+  #define RELAY_PIN_POWER         D5
+  #define RELAY_PIN_CIRCULATOR    D6
+  #define RELAY_STATE_ON          0
+  #define RELAY_STATE_OFF         1
 
 // I2C OLED Screen : 128*64
-  #define OLED_SCL              D1
-  #define OLED_SDA              D2
+  #define OLED_PIN_SCL            D2   // SCL pin : Mandatory
+  #define OLED_PIN_SDA            D1   // SDA pin : Mandatory
+  // TODO, 2020-04-23, RDU: Reassign properly, currently this uses a hack by modifying the pins_arduino.h
+
+  #define SCREEN_WIDTH            128  // OLED display width, in pixels
+  #define SCREEN_HEIGHT           64   // OLED display height, in pixels
+  #define OLED_RESET              -1   // Our screen has 4 pins : GND, VCC, SCL, SDA
+  #define OLED_I2C_ADDRESS        0x3C // I2C adress for the screen, might differ from silkscreen printout
 
 // General settings
-  #define LOOP_INTERVAL 10 // How often to execute loop (seconds)
+  #define LOOP_INTERVAL           10 // How often to execute loop (seconds)
