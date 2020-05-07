@@ -6,13 +6,16 @@
  ** 2019-07-30, RDU: Migrated PlatformIO from Atom to VSCode, updated project structure
  ** 2019-08-07, RDU: Updated lib_deps to rely solely on project's deps and not on any global libs, includes use of ArduinoJson 5.x
  ** 2020-04-23, RDU: /!\ For "production" PCB, the SCL/SDA are reassigned to simplify wiring
+ ** 2020-05-07, RDU: Implemented restoration of relays' states from MQTT retained messages
  **
  ** TODOs
+ ** - (Don't?) Implement NO/NC states logic for relays
  ** - Support multiple sensors as a HomieRange
  **
  *********************************************************************************************************************/
- #include <Homie.h>
- #include "main.h"
+
+#include <Homie.h>
+#include "main.h"
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -31,6 +34,9 @@
       HomieNode temperatureWaterOutNode("temperature-WaterOut", "Temperature", "temperature");
       HomieNode switchPowerNode("switch-power", "Switch", "switch");
       HomieNode switchCirculatorNode("switch-circulator", "Switch", "switch");
+      char* switchPowerNodeTopic;
+      char* switchCirculatorNodeTopic;
+      int restoreTopicsCount = 0;
 
     // Measure loop
       unsigned long lastMeasureSent = 0;
@@ -41,13 +47,22 @@
       #include <math.h> // Used to format states
 
     // Screen consts/vars
-      Adafruit_SSD1306 display; // In order to swap pins for PCB, the display is created during initScreen
+      Adafruit_SSD1306 display; // In order to swap pins for PCB, the display is created during screenInit
 
     // Buffers for screen info
       int switchCirculatorState = -1;
       int switchPowerState = -1;
       float tempInState = TEMP_NOT_READ;
       float tempOutState = TEMP_NOT_READ;
+
+  // MQTT Restore state
+      #include <Ethernet.h>
+      #include <PubSubClient.h>
+    
+    // Globals
+      bool isRestorationSetup = false;
+      WiFiClient espClient;
+      PubSubClient client(espClient);
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -212,7 +227,7 @@ void printNumber(int16_t x, int16_t y, int value, int16_t fontSize, int colorMod
   display.print(value);
 }
 
-void printStates()
+void screenPrintStates()
 {
   // Temperatures
     if (tempInState != TEMP_NOT_READ) printNumber(5, 40, round(tempInState), 2, CM_INVERT);
@@ -225,7 +240,7 @@ void printStates()
   display.display();
 }
 
-void printHeaders()
+void screenPrintHeaders()
 {
   // Cleanup
     display.clearDisplay();
@@ -242,14 +257,14 @@ void printHeaders()
     display.drawBitmap(25, 10, thermometer_logo, thermometer_w, thermometer_h, WHITE);
     display.drawBitmap(37, 13, arrow_r_logo, arrow_r_w, arrow_r_h, WHITE);
 
-    // Power logo, pump logo
+    // Power logo, circulator logo
     display.drawBitmap(66, 10, power_logo, power_w, power_h, WHITE);
     display.drawBitmap(66, 40, circulator_logo, circulator_w, circulator_h, WHITE);
 
   display.display();
 }
 
-void initScreen()
+void screenInit()
 {
   Homie.getLogger() << F("I2C OLED Screen : address d") << OLED_I2C_ADDRESS << endl;
   Homie.getLogger() << F("  > Init in progress . . .") << endl;
@@ -296,10 +311,153 @@ void loopHandlerDS18B20()
   }
 }
 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// States restoration
+void restoreStateFromTopic(char* topic, char* payload)
+{
+  Homie.getLogger() << F("State restoration for ") << topic << endl;
+
+  // Update topic to include the final /set command
+  char topicSet[255]{};
+  memset(&topicSet[0], 0, sizeof(topicSet));
+  memcpy(topicSet, topic, sizeof(topicSet));
+  strcat_P(topicSet, PSTR("/set"));
+
+  // Push payload to MQTT to force all subscribers to refresh, including our own nodes
+  if (client.publish(topicSet, payload))
+  {
+    Homie.getLogger() << F("  ✔ State restored : ") << payload << endl;
+    
+    // After restoration, unsubscribe from topic as this is a one shot
+    if (client.unsubscribe(topic))
+    {
+      Homie.getLogger() << F("  ✔ Unsubscribed") << endl;
+      restoreTopicsCount--;
+    }
+    else
+    {
+      Homie.getLogger() << F("  ✖ Unsubscribe failed") << endl;
+    }
+  }
+  else
+  {
+    Homie.getLogger() << F("  ✖ State restoration failed : ") << payload << endl;
+  }
+
+  // Free connection to MQTT broker if we are done
+  if (restoreTopicsCount==0)
+  {
+    client.disconnect();
+  }
+}
+
+void restoreStateCallback(char* topic, byte* payload, unsigned int length) {
+  // Get clean buffers for topic
+  char topicBuffer[255]{};
+  memcpy(topicBuffer, topic, sizeof(topicBuffer));
+
+  // Do we have to restore this topic? If so, do it
+  if (strcmp(topic, switchPowerNodeTopic) == 0 || strcmp(topic, switchCirculatorNodeTopic) == 0)
+  {
+    // Copy byte* payload to a char* and lower case it
+    char payloadBuffer[length+1];
+    memset(&payloadBuffer[0], 0, sizeof(payloadBuffer));
+    memcpy(payloadBuffer, payload, length);
+    for (unsigned int i=0; i<length; i++)
+    {
+      payload[i] = tolower(payload[i]);
+    }
+
+    restoreStateFromTopic(topicBuffer, payloadBuffer);
+  }
+}
+
+char* getNodeTopic(const HomieNode& node)
+{
+  int topicLen =
+      strlen(Homie.getConfiguration().mqtt.baseTopic)
+    + strlen(Homie.getConfiguration().deviceId) + 1
+    + strlen(switchPowerNode.getId()) + 1
+    + 2 + 1 // ON + \0
+    ;
+
+  char* topic = new char[topicLen];
+  memset(&topic[0], 0, topicLen);
+  strcpy(topic, Homie.getConfiguration().mqtt.baseTopic); // devices/
+  strcat(topic, Homie.getConfiguration().deviceId); // bcddc2256bad
+  strcat_P(topic, PSTR("/"));
+  strcat(topic, node.getId()); // switch-power
+  strcat_P(topic, PSTR("/on"));
+
+  return topic;
+}
+
+bool subscribeRestoreTopic(const char* topic)
+{
+  if (client.subscribe(topic))
+  {
+    Homie.getLogger() << "  ✔ Subscribed to : " << topic << endl;
+    restoreTopicsCount++;
+    return true;
+  }
+  else
+  {
+    Homie.getLogger() << "  ✖ Subscribe failed to : " << topic << endl;
+    return false;
+  }
+}
+
+void restoreState() {
+  // Skip if no topic is to be restored
+  if (isRestorationSetup && restoreTopicsCount == 0)
+    return;
+
+  // Check for pending retained messages
+  if (isRestorationSetup)
+  {
+    client.loop();
+    return;
+  }
+
+  // Skip if we don't have a connection
+  if (!Homie.isConnected())
+    return;
+
+  Homie.getLogger() << "Restore state" << endl;
+
+  // Network configuration of the MQTT server/port, read from Homie configuration
+  // We are not using the built-in Homie MQTT connection to enforce reception of retained messages
+  IPAddress mqttServer;
+  mqttServer.fromString(Homie.getConfiguration().mqtt.server.host);
+  client.setServer(mqttServer, Homie.getConfiguration().mqtt.server.port);
+
+  // Subscribe to our nodes' topics
+  client.setCallback(restoreStateCallback);
+  if (client.connect("restoreState", Homie.getConfiguration().mqtt.username, Homie.getConfiguration().mqtt.password)) {
+    // Power switch node
+      switchPowerNodeTopic = getNodeTopic(switchPowerNode);
+      subscribeRestoreTopic(switchPowerNodeTopic);
+
+    // Circulator switch node
+      switchCirculatorNodeTopic = getNodeTopic(switchCirculatorNode);
+      subscribeRestoreTopic(switchCirculatorNodeTopic);
+
+    // Setup for restoration is done even if we had errors, they are raised during subscriptions
+      isRestorationSetup = true;
+  } else {
+    Homie.getLogger() << "✖ Client not connected to MQTT, unable to define topics for restoration" << endl;
+    isRestorationSetup = false;
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Homie loop Handler
 void loopHandler() {
-  loopHandlerDS18B20();
-  printStates();
+  restoreState(); // Restore states from MQTT if required
+  loopHandlerDS18B20(); // Read temperatures
+  screenPrintStates(); // Print to OLED screen
 }
 
 
@@ -316,6 +474,9 @@ void setupHandler() {
       pinMode(RELAY_PIN_CIRCULATOR, OUTPUT);
       digitalWrite(RELAY_PIN_POWER, RELAY_STATE_OFF);
       digitalWrite(RELAY_PIN_CIRCULATOR, RELAY_STATE_OFF);
+    // OLED Screen
+      screenInit();
+      screenPrintHeaders();
 
   // Homie nodes
     // DS18B20 sensor
@@ -343,11 +504,7 @@ void setup() {
 
   Homie_setFirmware(FW_NAME, FW_VERSION);
   Homie.setSetupFunction(setupHandler).setLoopFunction(loopHandler);
-
   Homie.setup();
-
-  initScreen();
-  printHeaders();
 }
 
 
