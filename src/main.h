@@ -1,6 +1,6 @@
 // Software specifications
   #define FW_NAME                 "D1Mini-Furnace"
-  #define FW_VERSION              "0.20.5.9a"
+  #define FW_VERSION              "0.20.5.9b"
 
 // DS18B20 setup
   #define ONE_WIRE_BUS            D7 // Pin used for OneWire protocol

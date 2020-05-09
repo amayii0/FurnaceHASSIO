@@ -55,14 +55,14 @@
 // Utility function to get temperature from a DS18B20 on the bus, based on its index
 bool isValidTemperature(float readTemperature)
 {
-  return readTemperature+1 > TEMP_INVALID;// && readTemperature > TEMP_NOT_READ;
+  return readTemperature+1 > TEMP_INVALID; // Increment input temperature by 1 to prevent floating values comparison errors
 }
 
-float readTempFromDS18B20(int idx)
+float readTempFromDS18B20(int sensorIndex)
 {
-  float rawTemp = dtsensors.getTempCByIndex(idx);
+  float rawTemp = dtsensors.getTempCByIndex(sensorIndex);
   if (isnan(rawTemp)) {
-    Homie.getLogger() << F("✖ Failed to read from sensor ! Index=") << idx;
+    Homie.getLogger() << F("✖ Failed to read from sensor ! Index=") << sensorIndex << endl;
     return TEMP_INVALID;
   } else {
     return rawTemp;
