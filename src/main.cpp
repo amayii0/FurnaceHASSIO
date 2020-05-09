@@ -6,7 +6,6 @@
  ** 2019-07-30, RDU: Migrated PlatformIO from Atom to VSCode, updated project structure
  ** 2019-08-07, RDU: Updated lib_deps to rely solely on project's deps and not on any global libs, includes use of ArduinoJson 5.x
  ** 2020-04-23, RDU: /!\ For "production" PCB, the SCL/SDA are reassigned to simplify wiring
- ** 2020-05-07, RDU: Implemented restoration of relays' states from MQTT retained messages
  **
  ** TODOs
  ** - (Don't?) Implement NO/NC states logic for relays
@@ -23,8 +22,7 @@
   // DS18b20
     #include <OneWire.h>
     #include <DallasTemperature.h>
-    #define TEMP_INVALID 0.12345 // Invalid temperature
-    #define TEMP_NOT_READ -127.00 // Unable to read temperature
+    #define TEMP_INVALID  -127.00 // Invalid temperature
 
     OneWire oneWire(ONE_WIRE_BUS); // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
     DallasTemperature dtsensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
@@ -34,9 +32,6 @@
       HomieNode temperatureWaterOutNode("temperature-WaterOut", "Temperature", "temperature");
       HomieNode switchPowerNode("switch-power", "Switch", "switch");
       HomieNode switchCirculatorNode("switch-circulator", "Switch", "switch");
-      char* switchPowerNodeTopic;
-      char* switchCirculatorNodeTopic;
-      int restoreTopicsCount = 0;
 
     // Measure loop
       unsigned long lastMeasureSent = 0;
@@ -52,34 +47,24 @@
     // Buffers for screen info
       int switchCirculatorState = -1;
       int switchPowerState = -1;
-      float tempInState = TEMP_NOT_READ;
-      float tempOutState = TEMP_NOT_READ;
-
-  // MQTT Restore state
-      #include <Ethernet.h>
-      #include <PubSubClient.h>
-    
-    // Globals
-      bool isRestorationSetup = false;
-      WiFiClient espClient;
-      PubSubClient client(espClient);
+      float tempInState = TEMP_INVALID;
+      float tempOutState = TEMP_INVALID;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Utility function to get temperature from a DS18B20 on the bus, based on its index
 bool isValidTemperature(float readTemperature)
 {
-  return readTemperature != TEMP_INVALID && readTemperature > TEMP_NOT_READ;
+  return readTemperature+1 > TEMP_INVALID;// && readTemperature > TEMP_NOT_READ;
 }
 
-float getTemFromDS18B20(int idx)
+float readTempFromDS18B20(int idx)
 {
   float rawTemp = dtsensors.getTempCByIndex(idx);
   if (isnan(rawTemp)) {
-    Homie.getLogger() << F("Failed to read from sensor ! Index=") << idx;
+    Homie.getLogger() << F("✖ Failed to read from sensor ! Index=") << idx;
     return TEMP_INVALID;
   } else {
-    Homie.getLogger() << F("Temperature: ") << rawTemp << " °C, index=" << idx << ", IsValidTemp=" << isValidTemperature(rawTemp)<< endl;
     return rawTemp;
   }
 }
@@ -125,7 +110,6 @@ String valueToPayload(const String& value)
 bool switchPowerOnHandler(const HomieRange& range, const String& value) {
   if (!isValidSwitchValue(value))
   {
-    Homie.getLogger() << "Power switch received an invalid value : " << value << endl;
     return false;
   }
 
@@ -141,7 +125,6 @@ bool switchPowerOnHandler(const HomieRange& range, const String& value) {
 bool switchCirculatorOnHandler(const HomieRange& range, const String& value) {
   if (!isValidSwitchValue(value))
   {
-    Homie.getLogger() << "Circulator switch received an invalid value : " << value << endl;
     return false;
   }
 
@@ -159,10 +142,6 @@ bool switchCirculatorOnHandler(const HomieRange& range, const String& value) {
 #define CM_WHITE 0
 #define CM_BLACK 1
 #define CM_INVERT 2
-#define ROT_EAST 0
-#define ROT_WEST 2
-#define ROT_NORTH 3
-#define ROT_SOUTH 1
 
 void printText(int16_t x, int16_t y, char* text, int16_t fontSize, int colorMode, uint8_t rotation = 0.0)
 {
@@ -230,8 +209,8 @@ void printNumber(int16_t x, int16_t y, int value, int16_t fontSize, int colorMod
 void screenPrintStates()
 {
   // Temperatures
-    if (tempInState != TEMP_NOT_READ) printNumber(5, 40, round(tempInState), 2, CM_INVERT);
-    if (tempOutState != TEMP_NOT_READ) printNumber(36, 40, round(tempOutState), 2, CM_INVERT);
+    if (tempInState != TEMP_INVALID) printNumber(5, 40, round(tempInState), 2, CM_INVERT);
+    if (tempOutState != TEMP_INVALID) printNumber(36, 40, round(tempOutState), 2, CM_INVERT);
 
   // Relays
     if (switchPowerState != -1) printText(84, 10, (switchPowerState==RELAY_STATE_ON?"ON ":"OFF"), 2, CM_INVERT);
@@ -293,18 +272,22 @@ void loopHandlerDS18B20()
     float rawTemp = TEMP_INVALID;
 
     // Water out temp
-    rawTemp = getTemFromDS18B20(DS18B20_INDEX_WATEROUT);
+    rawTemp = readTempFromDS18B20(DS18B20_INDEX_WATEROUT);
     if (isValidTemperature(rawTemp)) {
       tempOutState = rawTemp;
       temperatureWaterOutNode.setProperty("degrees").send(String(rawTemp));
+    } else {
+      Homie.getLogger() << F("✖ Invalid temperature obtained for WaterOut") << endl;
     }
 
     // Water in temp
-    rawTemp = getTemFromDS18B20(DS18B20_INDEX_WATERIN);
+    rawTemp = readTempFromDS18B20(DS18B20_INDEX_WATERIN);
     if (isValidTemperature(rawTemp))
     {
       tempInState = rawTemp;
       temperatureWaterInNode.setProperty("degrees").send(String(rawTemp));
+    } else {
+      Homie.getLogger() << F("✖ Invalid temperature obtained for WaterIn") << endl;
     }
 
     lastMeasureSent = millis();
@@ -313,149 +296,8 @@ void loopHandlerDS18B20()
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// States restoration
-void restoreStateFromTopic(char* topic, char* payload)
-{
-  Homie.getLogger() << F("State restoration for ") << topic << endl;
-
-  // Update topic to include the final /set command
-  char topicSet[255]{};
-  memset(&topicSet[0], 0, sizeof(topicSet));
-  memcpy(topicSet, topic, sizeof(topicSet));
-  strcat_P(topicSet, PSTR("/set"));
-
-  // Push payload to MQTT to force all subscribers to refresh, including our own nodes
-  if (client.publish(topicSet, payload))
-  {
-    Homie.getLogger() << F("  ✔ State restored : ") << payload << endl;
-    
-    // After restoration, unsubscribe from topic as this is a one shot
-    if (client.unsubscribe(topic))
-    {
-      Homie.getLogger() << F("  ✔ Unsubscribed") << endl;
-      restoreTopicsCount--;
-    }
-    else
-    {
-      Homie.getLogger() << F("  ✖ Unsubscribe failed") << endl;
-    }
-  }
-  else
-  {
-    Homie.getLogger() << F("  ✖ State restoration failed : ") << payload << endl;
-  }
-
-  // Free connection to MQTT broker if we are done
-  if (restoreTopicsCount==0)
-  {
-    client.disconnect();
-  }
-}
-
-void restoreStateCallback(char* topic, byte* payload, unsigned int length) {
-  // Get clean buffers for topic
-  char topicBuffer[255]{};
-  memcpy(topicBuffer, topic, sizeof(topicBuffer));
-
-  // Do we have to restore this topic? If so, do it
-  if (strcmp(topic, switchPowerNodeTopic) == 0 || strcmp(topic, switchCirculatorNodeTopic) == 0)
-  {
-    // Copy byte* payload to a char* and lower case it
-    char payloadBuffer[length+1];
-    memset(&payloadBuffer[0], 0, sizeof(payloadBuffer));
-    memcpy(payloadBuffer, payload, length);
-    for (unsigned int i=0; i<length; i++)
-    {
-      payload[i] = tolower(payload[i]);
-    }
-
-    restoreStateFromTopic(topicBuffer, payloadBuffer);
-  }
-}
-
-char* getNodeTopic(const HomieNode& node)
-{
-  int topicLen =
-      strlen(Homie.getConfiguration().mqtt.baseTopic)
-    + strlen(Homie.getConfiguration().deviceId) + 1
-    + strlen(switchPowerNode.getId()) + 1
-    + 2 + 1 // ON + \0
-    ;
-
-  char* topic = new char[topicLen];
-  memset(&topic[0], 0, topicLen);
-  strcpy(topic, Homie.getConfiguration().mqtt.baseTopic); // devices/
-  strcat(topic, Homie.getConfiguration().deviceId); // bcddc2256bad
-  strcat_P(topic, PSTR("/"));
-  strcat(topic, node.getId()); // switch-power
-  strcat_P(topic, PSTR("/on"));
-
-  return topic;
-}
-
-bool subscribeRestoreTopic(const char* topic)
-{
-  if (client.subscribe(topic))
-  {
-    Homie.getLogger() << "  ✔ Subscribed to : " << topic << endl;
-    restoreTopicsCount++;
-    return true;
-  }
-  else
-  {
-    Homie.getLogger() << "  ✖ Subscribe failed to : " << topic << endl;
-    return false;
-  }
-}
-
-void restoreState() {
-  // Skip if no topic is to be restored
-  if (isRestorationSetup && restoreTopicsCount == 0)
-    return;
-
-  // Check for pending retained messages
-  if (isRestorationSetup)
-  {
-    client.loop();
-    return;
-  }
-
-  // Skip if we don't have a connection
-  if (!Homie.isConnected())
-    return;
-
-  Homie.getLogger() << "Restore state" << endl;
-
-  // Network configuration of the MQTT server/port, read from Homie configuration
-  // We are not using the built-in Homie MQTT connection to enforce reception of retained messages
-  IPAddress mqttServer;
-  mqttServer.fromString(Homie.getConfiguration().mqtt.server.host);
-  client.setServer(mqttServer, Homie.getConfiguration().mqtt.server.port);
-
-  // Subscribe to our nodes' topics
-  client.setCallback(restoreStateCallback);
-  if (client.connect("restoreState", Homie.getConfiguration().mqtt.username, Homie.getConfiguration().mqtt.password)) {
-    // Power switch node
-      switchPowerNodeTopic = getNodeTopic(switchPowerNode);
-      subscribeRestoreTopic(switchPowerNodeTopic);
-
-    // Circulator switch node
-      switchCirculatorNodeTopic = getNodeTopic(switchCirculatorNode);
-      subscribeRestoreTopic(switchCirculatorNodeTopic);
-
-    // Setup for restoration is done even if we had errors, they are raised during subscriptions
-      isRestorationSetup = true;
-  } else {
-    Homie.getLogger() << "✖ Client not connected to MQTT, unable to define topics for restoration" << endl;
-    isRestorationSetup = false;
-  }
-}
-
-
-///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Homie loop Handler
 void loopHandler() {
-  restoreState(); // Restore states from MQTT if required
   loopHandlerDS18B20(); // Read temperatures
   screenPrintStates(); // Print to OLED screen
 }
